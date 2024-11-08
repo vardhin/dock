@@ -24,19 +24,54 @@ const gun = Gun({
     peers: ['https://gun-manhattan.herokuapp.com/gun']
 });
 
-// Function to get GPU information (requires NVIDIA GPUs and `nvidia-smi` installed)
+// Function to get GPU information (supports both NVIDIA and AMD GPUs)
 function getGPUInfo() {
     return new Promise((resolve) => {
-        exec('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', (error, stdout) => {
-            if (error) {
-                console.error("Error fetching GPU info:", error);
-                return resolve([]);
+        // First try NVIDIA GPUs
+        exec('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', (nvidiaError, nvidiaStdout) => {
+            if (!nvidiaError) {
+                const gpus = nvidiaStdout.trim().split('\n').map(line => {
+                    const [name, memory] = line.split(',').map(s => s.trim());
+                    return { name, memory, type: 'NVIDIA' };
+                });
+                return resolve(gpus);
             }
-            const gpus = stdout.trim().split('\n').map(line => {
-                const [name, memory] = line.split(',').map(s => s.trim());
-                return { name, memory };
+
+            // If NVIDIA fails, try AMD GPUs
+            exec('rocm-smi --showproductname --showmeminfo vram', (amdError, amdStdout) => {
+                if (amdError) {
+                    console.error("No GPU info available:", amdError);
+                    return resolve([]);
+                }
+
+                try {
+                    const lines = amdStdout.trim().split('\n');
+                    const gpus = [];
+                    let currentGpu = {};
+
+                    lines.forEach(line => {
+                        if (line.includes('GPU')) {
+                            if (currentGpu.name) {
+                                gpus.push(currentGpu);
+                            }
+                            currentGpu = { type: 'AMD' };
+                        } else if (line.includes('Product Name')) {
+                            currentGpu.name = line.split(':')[1].trim();
+                        } else if (line.includes('VRAM')) {
+                            currentGpu.memory = line.split(':')[1].trim();
+                        }
+                    });
+
+                    if (currentGpu.name) {
+                        gpus.push(currentGpu);
+                    }
+
+                    resolve(gpus);
+                } catch (parseError) {
+                    console.error("Error parsing AMD GPU info:", parseError);
+                    resolve([]);
+                }
             });
-            resolve(gpus);
         });
     });
 }
