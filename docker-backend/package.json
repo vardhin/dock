@@ -12,6 +12,8 @@
   "dependencies": {
     "dockerode": "^4.0.2",
     "express": "^4.21.1",
-    "multer": "^1.4.5-lts.1"
+    "gun": "^0.2020.1240",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^11.0.2"
   }
 }
