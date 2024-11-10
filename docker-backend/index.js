@@ -8,30 +8,22 @@ const Gun = require('gun');
 const os = require('os');
 const { exec } = require('child_process');
 const path = require('path');
-
-// Utility to generate unique file names
 const { v4: uuidv4 } = require('uuid');
+
+// Generate a unique host ID
+const HOST_ID = uuidv4();
 
 // Create Express App
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Gun
+// Initialize Gun with public peers
 const server = app.listen(3000, () => console.log("Server running on http://localhost:3000"));
 const gun = Gun({
     web: server,
     peers: [
-        'https://gun-manhattan.herokuapp.com/gun',
-        'https://gun-us.herokuapp.com/gun',
-        'https://gun-eu.herokuapp.com/gun',
-        'https://gun-relay.herokuapp.com/gun',
-        'https://gun-peer1.herokuapp.com/gun',
-        'https://gun-peer2.herokuapp.com/gun', 
-        'https://gun-asia.herokuapp.com/gun',
-        'https://gun-au.herokuapp.com/gun',
-        'https://gun-br.herokuapp.com/gun',
-        'https://gun-ca.herokuapp.com/gun',
+        'https://gun-manhattan.herokuapp.com/gun'
     ]
 });
 
@@ -95,47 +87,82 @@ async function getSystemResources() {
     return { cpus, ram, gpus };
 }
 
-const NETWORK_ROOM_ID = 'networkroomid'; // Room ID for network resources
-
 // Function to broadcast resources
 async function broadcastResources() {
     const resources = await getSystemResources();
-    gun.get(NETWORK_ROOM_ID).get(os.hostname()).put({
+    console.log('Broadcasting resources:', {
+        hostname: os.hostname(),
+        resources: resources
+    });
+
+    gun.get(os.hostname()).put({
         host: os.hostname(),
         cpus: resources.cpus,
-        ram: resources.ram, // in bytes
-        gpuList: JSON.stringify(resources.gpus), // Storing GPU info as JSON string
+        ram: resources.ram,
+        gpuList: JSON.stringify(resources.gpus),
         timestamp: Date.now(),
+    }, (ack) => {
+        if (ack.err) {
+            console.error('Error broadcasting resources:', ack.err);
+        } else {
+            console.log('Successfully broadcasted resources');
+        }
     });
-    console.log(`Broadcasted resources for host: ${os.hostname()}`);
 }
 
 // Broadcast resources every 5 seconds
 setInterval(broadcastResources, 5000);
 
-// Listen to execution requests specific to this host
-const EXECUTION_ROOM = `executionRequests_${os.hostname()}`; // Unique room per host
-console.log(`Listening to execution room: ${EXECUTION_ROOM}`);
+// Listen to execution requests for this host
+gun.get(os.hostname()).on(async (request) => {
+    console.log('Received data on hostname:', os.hostname());
+    console.log('Request data:', JSON.stringify(request, null, 2));
 
-gun.get(EXECUTION_ROOM).map().on(async (request, key) => {
-    if (!request || request.processed || !request.code) return;
+    if (!request) {
+        console.log('Empty request received');
+        return;
+    }
+    if (request.processed) {
+        console.log('Request already processed, skipping');
+        return;
+    }
+    if (!request.code) {
+        console.log('No code in request');
+        return;
+    }
+    if (!request.clientId) {
+        console.log('No clientId in request');
+        return;
+    }
 
-    console.log(`Received execution request with key: ${key}`);
+    console.log(`Processing execution request for clientId: ${request.clientId}`);
 
-    const { code, clientRoomId, resources } = request;
-    const cpus = resources?.cpus || 1; // Default to 1 CPU if not specified
-    const ram = (resources?.ram || 512 * 1024 * 1024); // Default to 512MB if not specified
+    const { code, clientId, resources } = request;
+    const cpus = resources?.cpus || 1;
+    const ram = (resources?.ram || 512 * 1024 * 1024);
 
-    console.log(`Executing code with CPUs: ${cpus}, RAM: ${ram} bytes`);
-
-    // Generate a unique temporary file path
-    const uniqueId = uuidv4();
-    const filePath = path.join(os.tmpdir(), `code_${uniqueId}.py`);
+    console.log(`Configuration: CPUs=${cpus}, RAM=${ram} bytes`);
 
     try {
+        // Create client node for updates
+        const clientNode = gun.get(clientId);
+        console.log(`Created client node for ID: ${clientId}`);
+        
         // Update status to 'running'
-        await gun.get(clientRoomId).put({ status: 'running', timestamp: Date.now() });
-        console.log(`Status updated to 'running' for clientRoomId: ${clientRoomId}`);
+        clientNode.put({
+            status: 'running',
+            timestamp: Date.now()
+        }, (ack) => {
+            if (ack.err) {
+                console.error('Error updating running status:', ack.err);
+            } else {
+                console.log('Successfully updated status to running');
+            }
+        });
+
+        // Generate a unique temporary file path
+        const uniqueId = uuidv4();
+        const filePath = path.join(os.tmpdir(), `code_${uniqueId}.py`);
 
         // Save the code to a unique temporary file
         await fs.writeFile(filePath, code, { encoding: 'utf8' });
@@ -159,63 +186,76 @@ gun.get(EXECUTION_ROOM).map().on(async (request, key) => {
         await container.start();
         console.log(`Docker container started: ${container.id}`);
 
-        // Capture logs
+        // Capture logs with improved handling
         const logsStream = await container.logs({ stdout: true, stderr: true, follow: true });
         let output = "";
 
         logsStream.on("data", data => {
             output += data.toString();
+            console.log('Received output chunk:', data.toString());
         });
 
-        // Wait for the container to finish execution
-        await container.wait();
-        console.log(`Docker container execution completed: ${container.id}`);
+        // Wait for container completion
+        const waitResult = await container.wait();
+        console.log('Container wait result:', waitResult);
 
-        await container.remove();
-        console.log(`Docker container removed: ${container.id}`);
-
-        // Clean up the temporary file
-        try {
-            await fs.unlink(filePath);
-            console.log(`Temporary file deleted: ${filePath}`);
-        } catch (unlinkError) {
-            if (unlinkError.code === 'ENOENT') {
-                console.warn(`Temporary file not found for deletion: ${filePath}`);
+        // Update status and output on completion
+        console.log('Sending final output to client:', output);
+        
+        clientNode.put({
+            status: 'completed',
+            output: output,
+            timestamp: Date.now()
+        }, (ack) => {
+            if (ack.err) {
+                console.error('Error sending final output:', ack.err);
             } else {
-                console.error(`Error deleting temporary file: ${unlinkError.message}`);
+                console.log('Successfully sent final output to client');
             }
-        }
+        });
 
-        // Update status to 'completed' and send output
-        await gun.get(clientRoomId).put({ status: 'completed', output, timestamp: Date.now() });
-        console.log(`Status updated to 'completed' for clientRoomId: ${clientRoomId}`);
-
-        // Mark the request as processed
-        await gun.get(EXECUTION_ROOM).get(key).put({ processed: true });
-        console.log(`Marked request as processed with key: ${key}`);
+        // Mark request as processed
+        gun.get(os.hostname()).put({
+            ...request,
+            processed: true
+        }, (ack) => {
+            if (ack.err) {
+                console.error('Error marking request as processed:', ack.err);
+            } else {
+                console.log('Successfully marked request as processed');
+            }
+        });
 
     } catch (error) {
-        console.error(`Error during code execution: ${error.message}`);
+        console.error('Execution error:', error);
+        console.error('Error stack:', error.stack);
 
-        // Clean up the temporary file if it exists
-        try {
-            await fs.unlink(filePath);
-            console.log(`Temporary file deleted after error: ${filePath}`);
-        } catch (unlinkError) {
-            if (unlinkError.code === 'ENOENT') {
-                console.warn(`Temporary file not found for deletion after error: ${filePath}`);
+        // Update status to error
+        const clientNode = gun.get(clientId);
+        clientNode.put({
+            status: 'error',
+            output: `Error: ${error.message}`,
+            timestamp: Date.now()
+        }, (ack) => {
+            if (ack.err) {
+                console.error('Error sending error status:', ack.err);
             } else {
-                console.error(`Error deleting temporary file after error: ${unlinkError.message}`);
+                console.log('Successfully sent error status to client');
             }
-        }
+        });
 
-        // Update status to 'error' and send error message
-        await gun.get(clientRoomId).put({ status: 'error', output: error.message, timestamp: Date.now() });
-        console.log(`Status updated to 'error' for clientRoomId: ${clientRoomId}`);
+        // Mark request as processed
+        gun.get(os.hostname()).put({
+            ...request,
+            processed: true
+        }, (ack) => {
+            if (ack.err) {
+                console.error('Error marking error request as processed:', ack.err);
+            } else {
+                console.log('Successfully marked error request as processed');
+            }
+        });
 
-        // Mark the request as processed
-        await gun.get(EXECUTION_ROOM).get(key).put({ processed: true });
-        console.log(`Marked request as processed with key: ${key}`);
     }
 });
 
@@ -304,3 +344,4 @@ app.post("/run-code", upload.single("file"), async (req, res) => {
         res.status(500).send({ output: error.message });
     }
 });
+

@@ -3,7 +3,9 @@
     import Gun from 'gun/gun';
     import { writable } from 'svelte/store';
 
-    const gun = Gun(['http://localhost:3000/gun', 'https://gun-manhattan.herokuapp.com/gun']); // Connect to local and public Gun peers
+    const gun = Gun({
+        peers: ['https://gun-manhattan.herokuapp.com/gun']
+    }); // Connect to local and public Gun peers
     let availableHosts = [];
     let selectedHostKey = "";
     let selectedResources = { cpus: 1, ram: 1 }; // RAM in GBs
@@ -16,6 +18,9 @@
     let executionRequests = null;
 
     let inputMode = 'code'; // Add this near your other state variables
+
+    // Add clientId to state variables
+    let clientId = "";
 
     // Add this function to handle Excel download
     function downloadResourcesAsExcel() {
@@ -50,52 +55,63 @@
             return;
         }
 
-        let codeContent = code;
-        if (file) {
-            try {
-                codeContent = await file.text();
-            } catch (err) {
-                alert("Failed to read the uploaded file.");
-                console.error(err);
-                return;
-            }
-        }
-
-        if (!codeContent.trim()) {
-            alert("No code provided.");
+        if (!clientId.trim()) {
+            alert("Please enter a client ID.");
             return;
         }
 
-        const clientRoomId = `clientroom_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        // Find selected host's hostname
+        const selectedHost = availableHosts.find(h => h.key === selectedHostKey);
+        if (!selectedHost) {
+            console.error('Selected host not found in available hosts');
+            return;
+        }
+
+        console.log('Selected host:', selectedHost);
+
         const requestData = {
-            code: codeContent,
+            code: code,
             resources: {
                 cpus: parseInt(selectedResources.cpus),
-                ram: Math.round(parseFloat(selectedResources.ram) * 1024 ** 3) // Convert GB to bytes
+                ram: Math.round(parseFloat(selectedResources.ram) * 1024 ** 3)
             },
-            clientRoomId,
+            clientId,
             timestamp: Date.now(),
             processed: false
         };
 
-        // Send execution request to the selected host's execution room
-        const EXECUTION_ROOM = `executionRequests_${selectedHostKey}`;
-        gun.get(EXECUTION_ROOM).set(requestData);
-        console.log(`Execution request sent to room: ${EXECUTION_ROOM}`, requestData);
+        console.log('Sending request data:', requestData);
+
+        // Send execution request to the selected host's node
+        gun.get(selectedHost.host).put(requestData, (ack) => {
+            if (ack.err) {
+                console.error('Error sending request:', ack.err);
+            } else {
+                console.log('Request sent successfully');
+            }
+        });
 
         // Initialize status and output
         status = 'pending';
         output = '';
 
-        // Listen for status and output updates
-        gun.get(clientRoomId).on(data => {
-            if (data && data.status) {
-                status = data.status;
-                console.log(`Status updated to: ${status}`);
-            }
-            if (data && data.output) {
-                output = data.output;
-                console.log(`Output received: ${output}`);
+        console.log('Listening for updates on clientId:', clientId);
+
+        // Listen for status and output updates with improved logging
+        gun.get(clientId).on((data, key) => {
+            console.log('Received update on clientId:', clientId);
+            console.log('Update data:', data);
+            console.log('Update key:', key);
+
+            if (data) {
+                if (data.status) {
+                    status = data.status;
+                    console.log(`Status updated to: ${status}`);
+                }
+                if (data.output) {
+                    output = data.output;
+                    console.log(`Output received: ${output}`);
+                }
             }
         });
     }
@@ -175,6 +191,16 @@
                 Download Resources as CSV
             </button>
         </div>
+    </div>
+
+    <div class="client-id-section">
+        <h2>Client ID</h2>
+        <input 
+            type="text" 
+            bind:value={clientId} 
+            placeholder="Enter your client ID"
+            required
+        />
     </div>
 
     <div class="code-section">
