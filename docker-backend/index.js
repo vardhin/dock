@@ -21,7 +21,18 @@ app.use(express.urlencoded({ extended: true }));
 const server = app.listen(3000, () => console.log("Server running on http://localhost:3000"));
 const gun = Gun({
     web: server,
-    peers: ['https://gun-manhattan.herokuapp.com/gun']
+    peers: [
+        'https://gun-manhattan.herokuapp.com/gun',
+        'https://gun-us.herokuapp.com/gun',
+        'https://gun-eu.herokuapp.com/gun',
+        'https://gun-relay.herokuapp.com/gun',
+        'https://gun-peer1.herokuapp.com/gun',
+        'https://gun-peer2.herokuapp.com/gun', 
+        'https://gun-asia.herokuapp.com/gun',
+        'https://gun-au.herokuapp.com/gun',
+        'https://gun-br.herokuapp.com/gun',
+        'https://gun-ca.herokuapp.com/gun',
+    ]
 });
 
 // Function to get GPU information (supports both NVIDIA and AMD GPUs)

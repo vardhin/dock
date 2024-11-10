@@ -66,7 +66,7 @@
             return;
         }
 
-        const clientRoomId = `clientroom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const clientRoomId = `clientroom_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         const requestData = {
             code: codeContent,
             resources: {
@@ -107,7 +107,7 @@
 </script>
 
 <div class="container">
-    <h1>Python Code Runner</h1>
+    <h1>Decentralized Python Code Runner</h1>
 
     <div class="grid">
         <div class="host-selection">
