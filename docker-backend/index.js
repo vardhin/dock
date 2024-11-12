@@ -118,22 +118,23 @@ gun.get(os.hostname()).on(async (request) => {
     console.log('Received data on hostname:', os.hostname());
     console.log('Request data:', JSON.stringify(request, null, 2));
 
-    if (!request) {
-        console.log('Empty request received');
+    // Early validation checks
+    if (!request || request.processed || !request.code || !request.clientId) {
+        console.log('Invalid or already processed request, skipping');
         return;
     }
-    if (request.processed) {
-        console.log('Request already processed, skipping');
-        return;
-    }
-    if (!request.code) {
-        console.log('No code in request');
-        return;
-    }
-    if (!request.clientId) {
-        console.log('No clientId in request');
-        return;
-    }
+
+    // Mark request as processed immediately to prevent re-execution
+    gun.get(os.hostname()).put({
+        ...request,
+        processed: true
+    }, (ack) => {
+        if (ack.err) {
+            console.error('Error marking request as processed:', ack.err);
+            return;
+        }
+        console.log('Successfully marked request as processed');
+    });
 
     console.log(`Processing execution request for clientId: ${request.clientId}`);
 
@@ -214,17 +215,21 @@ gun.get(os.hostname()).on(async (request) => {
             }
         });
 
-        // Mark request as processed
-        gun.get(os.hostname()).put({
-            ...request,
-            processed: true
-        }, (ack) => {
-            if (ack.err) {
-                console.error('Error marking request as processed:', ack.err);
-            } else {
-                console.log('Successfully marked request as processed');
-            }
-        });
+        // After execution, set up a periodic update for the client
+        const updateInterval = setInterval(() => {
+            const clientNode = gun.get(clientId);
+            clientNode.once((data) => {
+                if (data.status === 'completed' || data.status === 'error') {
+                    clearInterval(updateInterval);
+                } else {
+                    clientNode.put({
+                        status: data.status,
+                        output: data.output,
+                        timestamp: Date.now()
+                    });
+                }
+            });
+        }, 1000); // Update every second
 
     } catch (error) {
         console.error('Execution error:', error);
