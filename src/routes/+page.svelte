@@ -1,7 +1,8 @@
 <script>
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import Gun from 'gun/gun';
     import { writable } from 'svelte/store';
+    import { v4 as uuidv4 } from 'uuid'; // Import UUID generator
 
     const gun = Gun({
         peers: ['https://gun-manhattan.herokuapp.com/gun']
@@ -13,6 +14,7 @@
     let file = null;
     let output = "";
     let status = "";
+    let requestId = ""; // New state variable for requestId
 
     const NETWORK_ROOM_ID = 'networkroomid';
     let executionRequests = null;
@@ -48,6 +50,8 @@
         });
     });
 
+    let outputIntervalId = null; // To store the interval ID
+
     // Submit code to selected host via Gun
     async function submitCode() {
         if (!selectedHostKey) {
@@ -60,6 +64,9 @@
             return;
         }
 
+        // Generate a unique requestId
+        requestId = uuidv4();
+
         // Find selected host's hostname
         const selectedHost = availableHosts.find(h => h.key === selectedHostKey);
         if (!selectedHost) {
@@ -70,6 +77,7 @@
         console.log('Selected host:', selectedHost);
 
         const requestData = {
+            requestId, // Include requestId
             code: code,
             resources: {
                 cpus: parseInt(selectedResources.cpus),
@@ -112,14 +120,57 @@
                     output = data.output;
                     console.log(`Output received: ${output}`);
                 }
+                if (data.newRequestReceived && data.requestId !== requestId) {
+                    // A new unique request has been received
+                    if (outputIntervalId) {
+                        clearInterval(outputIntervalId);
+                        outputIntervalId = null;
+                        console.log('New unique request received. Stopped output updates.');
+                    }
+                    // Reset status and output for the new request
+                    status = 'pending';
+                    output = '';
+                }
             }
         });
+
+        // Start listening for output updates every 3 seconds
+        outputIntervalId = setInterval(() => {
+            gun.get(clientId).once((data) => {
+                if (data && data.output) {
+                    output = data.output;
+                }
+
+                if (data && data.status) {
+                    status = data.status;
+                }
+            });
+        }, 3000);
     }
+
+    gun.get(NETWORK_ROOM_ID).map().on((data, key) => {
+        if (data && data.clientId === clientId && data.requestId !== requestId) {
+            if (outputIntervalId) {
+                clearInterval(outputIntervalId);
+                outputIntervalId = null;
+                console.log('New unique request detected. Stopped previous output signaling.');
+            }
+            // Reset status and output
+            status = 'pending';
+            output = '';
+        }
+    });
 
     function handleFileUpload(event) {
         file = event.target.files[0];
         code = "";
     }
+
+    onDestroy(() => {
+        if (outputIntervalId) {
+            clearInterval(outputIntervalId);
+        }
+    });
 </script>
 
 <div class="container">
@@ -174,6 +225,7 @@
                         min="1" 
                         bind:value={selectedResources.cpus} 
                         required
+                        disabled={status === 'pending'}
                     />
                 </label>
                 <label>
@@ -184,10 +236,15 @@
                         step="0.1" 
                         bind:value={selectedResources.ram} 
                         required
+                        disabled={status === 'pending'}
                     />
                 </label>
             </div>
-            <button class="download-button" on:click={downloadResourcesAsExcel}>
+            <button 
+                class="download-button" 
+                on:click={downloadResourcesAsExcel} 
+                disabled={status === 'pending'}
+            >
                 Download Resources as CSV
             </button>
         </div>
@@ -200,6 +257,7 @@
             bind:value={clientId} 
             placeholder="Enter your client ID"
             required
+            disabled={status === 'pending'} 
         />
     </div>
 
@@ -207,11 +265,11 @@
         <h2>Python Code</h2>
         <div class="input-mode-toggle">
             <label>
-                <input type="radio" bind:group={inputMode} value="code">
+                <input type="radio" bind:group={inputMode} value="code" disabled={status === 'pending'}>
                 Write Code
             </label>
             <label>
-                <input type="radio" bind:group={inputMode} value="file">
+                <input type="radio" bind:group={inputMode} value="file" disabled={status === 'pending'}>
                 Upload File
             </label>
         </div>
@@ -223,10 +281,11 @@
                     rows="10" 
                     placeholder="Enter your Python code here..." 
                     class="code-editor"
+                    disabled={status === 'pending'}
                 ></textarea>
             {:else}
                 <div class="file-upload">
-                    <input type="file" accept=".py" on:change={handleFileUpload} />
+                    <input type="file" accept=".py" on:change={handleFileUpload} disabled={status === 'pending'} />
                     {#if file}
                         <p class="file-name">Selected file: {file.name}</p>
                     {/if}
@@ -234,8 +293,8 @@
             {/if}
         </div>
         
-        <button class="run-button" on:click={submitCode}>
-            Run Code
+        <button class="run-button" on:click={submitCode} disabled={status === 'pending'}>
+            {status === 'pending' ? 'Running...' : 'Run Code'}
         </button>
     </div>
 
@@ -342,8 +401,13 @@
         transition: background-color 0.2s;
     }
 
-    .run-button:hover {
+    .run-button:hover:enabled {
         background: #3182ce;
+    }
+
+    .run-button:disabled {
+        background: #a0aec0;
+        cursor: not-allowed;
     }
 
     .output {
@@ -419,8 +483,13 @@
         transition: background-color 0.2s;
     }
 
-    .download-button:hover {
+    .download-button:hover:enabled {
         background: #38a169;
+    }
+
+    .download-button:disabled {
+        background: #a0aec0;
+        cursor: not-allowed;
     }
 
     .file-name {

@@ -119,8 +119,15 @@ gun.get(os.hostname()).on(async (request) => {
     console.log('Request data:', JSON.stringify(request, null, 2));
 
     // Early validation checks
-    if (!request || request.processed || !request.code || !request.clientId) {
+    if (!request || !request.requestId || request.processed || !request.code || !request.clientId) {
         console.log('Invalid or already processed request, skipping');
+        return;
+    }
+
+    // Check if the requestId has already been processed
+    const processedRequests = await gun.get('processedRequests').get(request.requestId).once();
+    if (processedRequests) {
+        console.log(`Request with ID ${request.requestId} has already been processed. Skipping execution.`);
         return;
     }
 
@@ -134,6 +141,15 @@ gun.get(os.hostname()).on(async (request) => {
             return;
         }
         console.log('Successfully marked request as processed');
+    });
+
+    // Store the processed requestId
+    gun.get('processedRequests').get(request.requestId).put(true, (ack) => {
+        if (ack.err) {
+            console.error('Error storing processed requestId:', ack.err);
+        } else {
+            console.log(`Stored processed requestId: ${request.requestId}`);
+        }
     });
 
     console.log(`Processing execution request for clientId: ${request.clientId}`);
@@ -230,6 +246,63 @@ gun.get(os.hostname()).on(async (request) => {
                 }
             });
         }, 1000); // Update every second
+
+        // After obtaining the output
+        const outputData = {
+            status: 'completed',
+            output: output,
+            timestamp: Date.now()
+        };
+
+        // Store the output data associated with requestId
+        gun.get('requestOutputs').get(request.requestId).put(outputData, (ack) => {
+            if (ack.err) {
+                console.error('Error storing output data:', ack.err);
+            } else {
+                console.log(`Stored output data for requestId: ${request.requestId}`);
+            }
+        });
+
+        // Function to start output signaling
+        function startOutputSignaling(clientId, output) {
+            const intervalId = setInterval(() => {
+                gun.get(clientId).put({
+                    output: output,
+                    timestamp: Date.now(),
+                }, (ack) => {
+                    if (ack.err) {
+                        console.error('Error sending output update to client:', ack.err);
+                    } else {
+                        console.log('Sent output update to client');
+                    }
+                });
+            }, 3000); // Every 3 seconds
+
+            return intervalId;
+        }
+
+        // Start signaling
+        const outputInterval = startOutputSignaling(request.clientId, outputData.output);
+
+        // Listen for new unique requests to stop signaling
+        gun.get(os.hostname()).on(async (newRequest) => {
+            if (newRequest.clientId === request.clientId && newRequest.requestId !== request.requestId) {
+                clearInterval(outputInterval);
+                console.log('Detected new unique request. Stopped previous output signaling.');
+            }
+        });
+
+        // After processing a new request
+        gun.get(request.clientId).put({
+            newRequestReceived: true,
+            timestamp: Date.now(),
+        }, (ack) => {
+            if (ack.err) {
+                console.error('Error setting newRequestReceived flag:', ack.err);
+            } else {
+                console.log('Set newRequestReceived flag for client');
+            }
+        });
 
     } catch (error) {
         console.error('Execution error:', error);
